@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>PELOTA - Duelo de dioses - v0.1</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#14100a; color:#e8dcc4; font-family:Georgia,serif; display:flex; flex-direction:column; align-items:center; min-height:100vh; overflow:hidden; touch-action:none; }
+h1 { font-size:22px; letter-spacing:8px; margin-top:10px; color:#e8c46a; text-shadow:0 0 14px rgba(232,196,106,.4); }
+#wrap { position:relative; width:min(96vw, 920px); }
+canvas { width:100%; display:block; border:3px solid #5a4a28; border-radius:6px; background:#1d170e; }
+.on { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; background:rgba(12,9,4,.88); text-align:center; padding:16px; }
+.on h2 { color:#e8c46a; letter-spacing:4px; margin-bottom:10px; }
+.on p { color:#b9a888; font-size:14px; line-height:1.55; }
+.on button { margin:8px 6px 0; background:#e8c46a; color:#241a06; border:0; padding:11px 22px; font-family:Georgia,serif; font-weight:bold; letter-spacing:1px; cursor:pointer; border-radius:4px; font-size:14px; }
+.on button:hover { filter:brightness(1.15); }
+.hidden { display:none !important; }
+#hint { color:#7a6a4a; font-size:12px; margin-top:8px; text-align:center; }
+@media (max-width:760px){ h1{font-size:16px; letter-spacing:4px} }
+</style>
+</head>
+<body>
+<h1>PELOTA</h1>
+<div id="wrap">
+<canvas id="c" width="920" height="520"></canvas>
+<div id="menu" class="on">
+  <h2>DUELO DE DIOSES</h2>
+  <p>El juego de pelota de los dioses. La pelota de hule acelera con cada golpe.<br>
+  Primero a 7 puntos gana la gloria; el perdedor enfrenta al sacerdote.<br><br>
+  <b style="color:#e8dcc4">1P:</b> [W]/[S] o toca tu mitad · <b style="color:#e8dcc4">2P:</b> W/S vs ↑/↓</p>
+  <div>
+    <button id="b1p">UN JUGADOR (vs IA)</button>
+    <button id="b2p">DOS JUGADORES</button>
+  </div>
+</div>
+<div id="over" class="on hidden">
+  <h2 id="otitle"></h2>
+  <p id="otext"></p>
+  <button id="bagain">OTRO DUELO</button>
+</div>
+</div>
+<p id="hint">PELOTA v0.1 — prototipo PvP local. Hecho por Super.</p>
+<script>
+"use strict";
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+const W = 920, H = 520, PW = 16, PH = 92, GOAL = 7;
+const $ = id => document.getElementById(id);
+
+// audio
+let AC = null;
+function beep(f, d, t='square', v=.05) {
+  try {
+    AC = AC || new (window.AudioContext||window.webkitAudioContext)();
+    const o = AC.createOscillator(), g = AC.createGain();
+    o.type = t; o.frequency.value = f;
+    g.gain.setValueAtTime(v, AC.currentTime);
+    g.gain.exponentialRampToValueAtTime(.0001, AC.currentTime + d);
+    o.connect(g); g.connect(AC.destination);
+    o.start(); o.stop(AC.currentTime + d);
+  } catch(e){}
+}
+
+let mode = 'menu'; // menu | play | over
+let human2 = false;
+let p1, p2, ball, s1, s2, rally, shake, parts, serveT;
+
+function serveBall(dir) {
+  ball = { x: W/2, y: H/2, r: 11, speed: 5.2, vx: dir * 5.2, vy: (Math.random()*2-1) * 3 };
+  serveT = 60; rally = 0;
+}
+function reset() {
+  p1 = { y: H/2 - PH/2 }; p2 = { y: H/2 - PH/2 };
+  s1 = 0; s2 = 0; shake = 0; parts = [];
+  serveBall(Math.random() < .5 ? 1 : -1);
+}
+
+// input
+const keys = {};
+addEventListener('keydown', e => { keys[e.key.toLowerCase()] = true; if ([' ','arrowup','arrowdown'].includes(e.key.toLowerCase())) e.preventDefault(); });
+addEventListener('keyup', e => keys[e.key.toLowerCase()] = false);
+function touchPos(e) {
+  const r = cv.getBoundingClientRect();
+  return { side: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height * H };
+}
+cv.addEventListener('pointerdown', e => {
+  if (mode !== 'play') return;
+  const t = touchPos(e);
+  if (human2 && t.side > .5) p2.ty = t.y - PH/2; else p1.ty = t.y - PH/2;
+});
+cv.addEventListener('pointermove', e => {
+  if (mode !== 'play') return;
+  const t = touchPos(e);
+  if (human2 && t.side > .5) p2.ty = t.y - PH/2; else p1.ty = t.y - PH/2;
+});
+
+function startGame(two) {
+  human2 = two; reset(); mode = 'play';
+  $('menu').classList.add('hidden'); $('over').classList.add('hidden');
+}
+$('b1p').onclick = () => startGame(false);
+$('b2p').onclick = () => startGame(true);
+$('bagain').onclick = () => { reset(); mode = 'play'; $('over').classList.add('hidden'); };
+
+function burst(x, y, col, n) {
+  for (let i=0;i<n;i++) parts.push({ x, y, vx:(Math.random()-.5)*8, vy:(Math.random()-.5)*8, l:20+Math.random()*15, c:col });
+}
+
+function goal(who) {
+  if (who === 1) s1++; else s2++;
+  shake = 12;
+  burst(who === 1 ? W-30 : 30, ball.y, '#ff8c5a', 24);
+  beep(who === 1 ? 300 : 160, .35, 'sawtooth', .08);
+  if (s1 >= GOAL || s2 >= GOAL) {
+    mode = 'over';
+    const p1w = s1 >= GOAL;
+    $('otitle').textContent = p1w ? '¡CAMPEÓN DEL QUINTO SOL!' : 'DERROTA EN LA CANCHA';
+    $('otext').innerHTML = p1w
+      ? 'Ganaste ' + s1 + ' - ' + s2 + '. El Quinto Sol te pertenece... por ahora.' + (human2 ? '<br>Jugador 2: el sacerdote te espera.' : '')
+      : 'Perdiste ' + s1 + ' - ' + s2 + '. ' + (human2 ? 'Jugador 2 celebra con los dioses.' : 'La IA de Tezcatlipoca sonríe desde su espejo de obsidiana.');
+    $('over').classList.remove('hidden');
+    return;
+  }
+  serveBall(who === 1 ? -1 : 1);
+}
+
+function update() {
+  if (mode !== 'play') return;
+  if (shake > 0) shake--;
+
+  // p1 humano (teclado o toque)
+  let t1 = p1.ty !== undefined ? p1.ty : p1.y;
+  if (keys['w']) { t1 = p1.y - 9; p1.ty = undefined; }
+  if (keys['s']) { t1 = p1.y + 9; p1.ty = undefined; }
+  p1.y += Math.max(-12, Math.min(12, t1 - p1.y));
+  p1.y = Math.max(0, Math.min(H - PH, p1.y));
+
+  if (human2) {
+    let t2 = p2.ty !== undefined ? p2.ty : p2.y;
+    if (keys['arrowup']) { t2 = p2.y - 9; p2.ty = undefined; }
+    if (keys['arrowdown']) { t2 = p2.y + 9; p2.ty = undefined; }
+    p2.y += Math.max(-12, Math.min(12, t2 - p2.y));
+  } else {
+    const target = ball.vx > 0 ? ball.y - PH/2 + Math.sin(ball.y*.05)*24 : H/2 - PH/2;
+    p2.y += Math.max(-7.4, Math.min(7.4, (target - p2.y) * .18));
+  }
+  p2.y = Math.max(0, Math.min(H - PH, p2.y));
+
+  if (serveT > 0) { serveT--; return; }
+
+  ball.x += ball.vx; ball.y += ball.vy;
+  if (ball.y < ball.r) { ball.y = ball.r; ball.vy = Math.abs(ball.vy); beep(220, .05); }
+  if (ball.y > H - ball.r) { ball.y = H - ball.r; ball.vy = -Math.abs(ball.vy); beep(220, .05); }
+
+  const hitPad = (px, py, isP1) => {
+    if (ball.x - ball.r < px + PW && ball.x + ball.r > px && ball.y > py && ball.y < py + PH) {
+      ball.speed = Math.min(ball.speed * 1.06 + .1, 14);
+      const rel = (ball.y - (py + PH/2)) / (PH/2);
+      ball.vx = (isP1 ? 1 : -1) * ball.speed;
+      ball.vy = rel * ball.speed * .75;
+      rally++;
+      burst(ball.x, ball.y, '#e8c46a', 6);
+      beep(isP1 ? 420 : 380, .06);
+    }
+  };
+  hitPad(30, p1.y, true);
+  hitPad(W - 30 - PW, p2.y, false);
+
+  if (ball.x < -20) goal(2);
+  if (ball.x > W + 20) goal(1);
+
+  for (const p of parts) { p.x += p.vx; p.y += p.vy; p.vy += .2; p.l--; }
+  parts = parts.filter(p => p.l > 0);
+}
+
+function greca(y) {
+  ctx.fillStyle = 'rgba(232,196,106,.08)';
+  for (let i=0;i<12;i++) {
+    const gx = i*80;
+    ctx.beginPath();
+    ctx.moveTo(gx, y); ctx.lineTo(gx+18, y); ctx.lineTo(gx+18, y+14); ctx.lineTo(gx+36, y+14); ctx.lineTo(gx+36, y);
+    ctx.lineTo(gx+44, y); ctx.lineTo(gx+44, y+7); ctx.lineTo(gx+30, y+7); ctx.lineTo(gx+30, y+20); ctx.lineTo(gx+8, y+20);
+    ctx.lineTo(gx+8, y+7); ctx.lineTo(gx, y+7);
+    ctx.fill();
+  }
+}
+
+function draw() {
+  ctx.clearRect(0,0,W,H);
+  const sx = shake>0 ? (Math.random()-.5)*shake : 0, sy = shake>0 ? (Math.random()-.5)*shake : 0;
+  ctx.save(); ctx.translate(sx, sy);
+
+  const g = ctx.createLinearGradient(0,0,0,H); g.addColorStop(0,'#241c10'); g.addColorStop(1,'#1a140b');
+  ctx.fillStyle = g; ctx.fillRect(-20,-20,W+40,H+40);
+  greca(12); greca(H-34);
+  ctx.strokeStyle = 'rgba(232,196,106,.25)'; ctx.lineWidth = 2; ctx.setLineDash([10,8]);
+  ctx.beginPath(); ctx.moveTo(W/2, 40); ctx.lineTo(W/2, H-40); ctx.stroke(); ctx.setLineDash([]);
+  ctx.beginPath(); ctx.arc(W/2, H/2, 52, 0, 7); ctx.stroke();
+  ctx.strokeStyle = 'rgba(232,196,106,.18)'; ctx.lineWidth = 6;
+  ctx.beginPath(); ctx.arc(W/2, H/2, 18, 0, 7); ctx.stroke();
+
+  // marcador
+  ctx.font = 'bold 58px Georgia'; ctx.textAlign = 'center'; ctx.fillStyle = '#e8c46a';
+  ctx.fillText(s1, W/2 - 110, 90);
+  ctx.fillText(s2, W/2 + 110, 90);
+  ctx.strokeStyle = 'rgba(232,196,106,.3)'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.moveTo(W/2-120, 100); ctx.lineTo(W/2-80, 100); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(W/2+80, 100); ctx.lineTo(W/2+120, 100); ctx.stroke();
+
+  if (rally > 2 && mode === 'play') {
+    ctx.font = '16px Georgia'; ctx.fillStyle = '#b9a888';
+    ctx.fillText('rally x' + rally, W/2, H - 24);
+  }
+
+  const drawPad = (x, y, gold) => {
+    ctx.fillStyle = gold ? '#e8c46a' : '#c4a25a';
+    ctx.fillRect(x, y, PW, PH);
+    ctx.fillStyle = 'rgba(0,0,0,.3)';
+    ctx.fillRect(x, y, PW, 6); ctx.fillRect(x, y+PH-6, PW, 6);
+    ctx.fillStyle = '#241a06';
+    ctx.beginPath(); ctx.arc(x + PW/2, y + PH/2, 4, 0, 7); ctx.fill();
+  };
+  drawPad(30, p1.y, true);
+  drawPad(W - 30 - PW, p2.y, false);
+
+  // pelota de hule con sombra y costura
+  ctx.fillStyle = 'rgba(0,0,0,.35)';
+  ctx.beginPath(); ctx.ellipse(ball.x + 3, ball.y + 5, ball.r, ball.r*.8, 0, 0, 7); ctx.fill();
+  const bg = ctx.createRadialGradient(ball.x-3, ball.y-3, 1, ball.x, ball.y, ball.r);
+  bg.addColorStop(0, '#4a382a'); bg.addColorStop(1, '#241a12');
+  ctx.fillStyle = bg;
+  ctx.beginPath(); ctx.arc(ball.x, ball.y, ball.r, 0, 7); ctx.fill();
+  ctx.strokeStyle = 'rgba(232,196,106,.4)'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.arc(ball.x, ball.y, ball.r*.55, 0, 7); ctx.stroke();
+
+  if (serveT > 0 && mode === 'play') {
+    ctx.font = 'bold 40px Georgia'; ctx.fillStyle = 'rgba(232,196,106,' + (serveT/60) + ')';
+    ctx.fillText('o', W/2, H/2 - 70);
+  }
+
+  for (const p of parts) { ctx.globalAlpha = Math.min(p.l/18,1); ctx.fillStyle = p.c; ctx.fillRect(p.x, p.y, 4, 4); }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
+function frame() { update(); draw(); requestAnimationFrame(frame); }
+reset(); frame();
+</script>
+</body>
+</html>
